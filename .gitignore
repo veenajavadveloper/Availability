@@ -1,0 +1,6 @@
+node_modules/
+dist/
+npm-audit-report.json
+gl-sast-report.json
+junit.xml
+.npm/

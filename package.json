@@ -1,0 +1,21 @@
+{
+  "name": "availability-demo",
+  "version": "1.0.0",
+  "description": "CIA Triad - Availability pillar demo (load balancing, backups, DDoS protection)",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node index.ts",
+    "test": "jest --reporters=default --reporters=jest-junit"
+  },
+  "devDependencies": {
+    "@types/jest": "^30.0.0",
+    "@types/node": "^20.11.0",
+    "jest": "^30.4.2",
+    "jest-junit": "^17.0.0",
+    "ts-jest": "^29.4.11",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.0"
+  }
+}

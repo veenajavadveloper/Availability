@@ -1,0 +1,180 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  install:
+    name: Install dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - run: npm ci
+
+  semgrep_sast:
+    name: SAST (Semgrep)
+    needs: install
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Semgrep
+        run: semgrep scan --config auto --error --sarif --output=semgrep.sarif
+      - name: Upload SARIF to GitHub code scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: semgrep.sarif
+
+  npm_audit_sca:
+    name: SCA (npm audit)
+    needs: install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - run: npm ci
+      - run: npm audit --json > npm-audit-report.json || true
+      - run: npm audit --audit-level=high
+      - name: Upload audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-audit-report
+          path: npm-audit-report.json
+
+  security_standards_review:
+    name: Security Standards Review (BSI/ISO 27001/OWASP)
+    needs: install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Determine diff base
+        id: base
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "ref=origin/${{ github.event.pull_request.base.ref }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=HEAD~1" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run security-standards-review agent
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          claude -p \
+            --agent security-standards-review \
+            --allowedTools "Read,Grep,Glob,Bash(git *),ReportFindings" \
+            --output-format json \
+            "Review the changes between ${{ steps.base.outputs.ref }} and HEAD (source and test files), following your full process including the final CI_SECURITY_REVIEW_RESULT line." \
+            > review-raw.json
+          jq -r '.result' review-raw.json | tee review-output.txt
+
+          RESULT_JSON=$(grep -o 'CI_SECURITY_REVIEW_RESULT:.*' review-output.txt | tail -1 | sed 's/^CI_SECURITY_REVIEW_RESULT: //')
+          echo "Parsed result: $RESULT_JSON"
+
+          if [ -z "$RESULT_JSON" ]; then
+            echo "::error::security-standards-review agent did not emit a CI_SECURITY_REVIEW_RESULT line — treating as failure."
+            exit 1
+          fi
+
+          BLOCKING=$(echo "$RESULT_JSON" | jq -r '.blocking')
+          if [ "$BLOCKING" = "true" ]; then
+            echo "::error::Security standards review found confirmed BSI/ISO 27001/OWASP findings. See the security-standards-review artifact for details."
+            exit 1
+          fi
+
+      - name: Upload security review transcript
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-standards-review
+          path: review-output.txt
+
+  build:
+    name: Build
+    needs: [semgrep_sast, npm_audit_sca, security_standards_review]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - run: npm ci
+      - run: npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  test:
+    name: Test
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - run: npm ci
+      - run: npm test
+      - name: Add coverage summary to job summary
+        if: always()
+        run: |
+          node -e '
+            const { total } = require("./coverage/coverage-summary.json");
+            const pct = (m) => total[m].pct + "%";
+            console.log("## Test Coverage\n");
+            console.log("| Metric | Coverage |");
+            console.log("|---|---|");
+            console.log(`| Statements | ${pct("statements")} |`);
+            console.log(`| Branches | ${pct("branches")} |`);
+            console.log(`| Functions | ${pct("functions")} |`);
+            console.log(`| Lines | ${pct("lines")} |`);
+          ' >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload test results (JUnit) and coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            junit.xml
+            coverage/
+
+  deploy:
+    name: Deploy
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - run: npm ci
+      - run: npm run build
+      - run: npm start
