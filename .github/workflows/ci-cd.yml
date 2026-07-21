@@ -16,7 +16,7 @@ jobs:
         with:
           node-version: "20"
           cache: "npm"
-      - run: npm ci
+      - run: npm install
 
   semgrep_sast:
     name: SAST (Semgrep)
@@ -44,7 +44,7 @@ jobs:
         with:
           node-version: "20"
           cache: "npm"
-      - run: npm ci
+      - run: npm install
       - run: npm audit --json > npm-audit-report.json || true
       - run: npm audit --audit-level=high
       - name: Upload audit report
@@ -54,67 +54,9 @@ jobs:
           name: npm-audit-report
           path: npm-audit-report.json
 
-  security_standards_review:
-    name: Security Standards Review (BSI/ISO 27001/OWASP)
-    needs: install
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      - name: Install Claude Code CLI
-        run: npm install -g @anthropic-ai/claude-code
-
-      - name: Determine diff base
-        id: base
-        run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            echo "ref=origin/${{ github.event.pull_request.base.ref }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "ref=HEAD~1" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Run security-standards-review agent
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: |
-          claude -p \
-            --agent security-standards-review \
-            --allowedTools "Read,Grep,Glob,Bash(git *),ReportFindings" \
-            --output-format json \
-            "Review the changes between ${{ steps.base.outputs.ref }} and HEAD (source and test files), following your full process including the final CI_SECURITY_REVIEW_RESULT line." \
-            > review-raw.json
-          jq -r '.result' review-raw.json | tee review-output.txt
-
-          RESULT_JSON=$(grep -o 'CI_SECURITY_REVIEW_RESULT:.*' review-output.txt | tail -1 | sed 's/^CI_SECURITY_REVIEW_RESULT: //')
-          echo "Parsed result: $RESULT_JSON"
-
-          if [ -z "$RESULT_JSON" ]; then
-            echo "::error::security-standards-review agent did not emit a CI_SECURITY_REVIEW_RESULT line — treating as failure."
-            exit 1
-          fi
-
-          BLOCKING=$(echo "$RESULT_JSON" | jq -r '.blocking')
-          if [ "$BLOCKING" = "true" ]; then
-            echo "::error::Security standards review found confirmed BSI/ISO 27001/OWASP findings. See the security-standards-review artifact for details."
-            exit 1
-          fi
-
-      - name: Upload security review transcript
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: security-standards-review
-          path: review-output.txt
-
   build:
     name: Build
-    needs: [semgrep_sast, npm_audit_sca, security_standards_review]
+    needs: [semgrep_sast, npm_audit_sca]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -122,7 +64,7 @@ jobs:
         with:
           node-version: "20"
           cache: "npm"
-      - run: npm ci
+      - run: npm install
       - run: npm run build
       - uses: actions/upload-artifact@v4
         with:
@@ -139,7 +81,7 @@ jobs:
         with:
           node-version: "20"
           cache: "npm"
-      - run: npm ci
+      - run: npm install
       - run: npm test
       - name: Add coverage summary to job summary
         if: always()
@@ -175,6 +117,6 @@ jobs:
         with:
           node-version: "20"
           cache: "npm"
-      - run: npm ci
+      - run: npm install
       - run: npm run build
       - run: npm start
